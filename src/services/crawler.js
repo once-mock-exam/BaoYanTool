@@ -1,4 +1,4 @@
-import { cachedBaoyanNews, cachedTechHotspots } from "./seed.js";
+import { cachedBaoyanNews, cachedTechHotspots, cachedCurrentHotspots, cachedFinanceHotspots } from "./seed.js";
 
 const BAOYAN_SOURCE = "http://pc.baoyanwang.com.cn/articles?category=%E4%BF%9D%E7%A0%94%E4%BF%A1%E6%81%AF";
 const BAOYAN_API_BASE = "http://api.baoyanwang.com.cn/api/v1";
@@ -27,6 +27,25 @@ const TECH_HEADERS = {
   "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36 Yan/0.1",
   "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 };
+
+const CURRENT_SOURCES = [
+  {
+    name: "人民网",
+    feedUrl: "http://www.people.com.cn/rss/politics.xml",
+    urls: ["http://politics.people.com.cn/"]
+  }
+];
+
+const FINANCE_SOURCES = [
+  {
+    name: "新浪财经",
+    apiUrl: "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2517&k=&num=20&page=1"
+  },
+  {
+    name: "界面新闻",
+    urls: ["https://www.jiemian.com/", "https://www.jiemian.com/lists/2.html"]
+  }
+];
 
 export async function fetchBaoyanNews({ force = false, currentCache } = {}) {
   const previous = currentCache?.items?.length ? currentCache.items : cachedBaoyanNews;
@@ -163,6 +182,140 @@ export async function fetchTechHotspots({ currentCache } = {}) {
   };
 }
 
+export async function fetchCurrentHotspots({ currentCache } = {}) {
+  const previous = currentCache?.items?.length ? currentCache.items : cachedCurrentHotspots;
+  const sources = CURRENT_SOURCES.map((source) => source.name);
+  const results = await Promise.allSettled(CURRENT_SOURCES.map((source) => fetchNewsSource(source, "current")));
+  // 时事热点不按年份过滤，直接取最新内容
+  const fresh = results
+    .flatMap((result) => result.status === "fulfilled" ? result.value : [])
+    .filter((item) => item.publishedAt);
+
+  if (fresh.length) {
+    return {
+      ok: true,
+      stale: false,
+      updatedAt: new Date().toISOString(),
+      sources,
+      message: `已从网页端更新 ${fresh.length} 条时事热点。`,
+      items: mergeDedupe(fresh, previous)
+    };
+  }
+
+  return {
+    ok: false,
+    stale: true,
+    updatedAt: currentCache?.updatedAt || new Date().toISOString(),
+    sources,
+    message: "时事热点暂未抓到数据，显示缓存。",
+    items: previous
+  };
+}
+
+export async function fetchFinanceHotspots({ currentCache } = {}) {
+  const previous = currentCache?.items?.length ? currentCache.items : cachedFinanceHotspots;
+  const sources = FINANCE_SOURCES.map((source) => source.name);
+  const results = await Promise.allSettled(FINANCE_SOURCES.map((source) => fetchNewsSource(source, "finance")));
+  const fresh = results
+    .flatMap((result) => result.status === "fulfilled" ? result.value : [])
+    .filter((item) => publishedInYear(item.publishedAt, TECH_YEAR));
+
+  if (fresh.length) {
+    return {
+      ok: true,
+      stale: false,
+      updatedAt: new Date().toISOString(),
+      sources,
+      message: `已从网页端更新 ${fresh.length} 条经济金融热点。`,
+      items: mergeDedupe(fresh, previous.filter((item) => publishedInYear(item.publishedAt, TECH_YEAR)))
+    };
+  }
+
+  return {
+    ok: false,
+    stale: true,
+    updatedAt: currentCache?.updatedAt || new Date().toISOString(),
+    sources,
+    message: "经济金融热点暂未抓到数据，显示缓存。",
+    items: previous
+  };
+}
+
+async function fetchNewsSource(source, type) {
+  const items = [];
+
+  // 优先使用 API
+  if (source.apiUrl) {
+    try {
+      const apiItems = await fetchSinaApi(source.apiUrl, source.name, type);
+      items.push(...apiItems);
+    } catch {
+      // API 失败时继续尝试
+    }
+  }
+
+  // 使用 RSS feed（时事热点不限年份）
+  if (!items.length && source.feedUrl) {
+    try {
+      const feed = await fetchText(source.feedUrl);
+      if (type === "current") {
+        items.push(...parseRssFeedNoYearLimit(feed, source.name));
+      } else {
+        items.push(...parseRssFeed(feed, source.name));
+      }
+    } catch {
+      // RSS 失败时继续尝试 HTML
+    }
+  }
+
+  // 使用 HTML 解析
+  if (!items.length && source.urls) {
+    const pages = await Promise.allSettled(source.urls.map((url) => fetchText(url)));
+    for (const page of pages) {
+      if (page.status !== "fulfilled") continue;
+      items.push(...parseNewsHtml(page.value, source.name, type));
+    }
+  }
+
+  return items.slice(0, 15);
+}
+
+async function fetchSinaApi(apiUrl, source, type) {
+  const response = await fetch(apiUrl, {
+    headers: TECH_HEADERS,
+    signal: AbortSignal.timeout(8000)
+  });
+  if (!response.ok) throw new Error(`API HTTP ${response.status}`);
+  const payload = await response.json();
+  const data = payload?.result?.data;
+  if (!Array.isArray(data)) return [];
+
+  return data
+    .filter((item) => {
+      const title = item.title || "";
+      if (!title || title.length < 8) return false;
+      return isRelevantNews(title, type);
+    })
+    .map((item) => {
+      const title = cleanText(item.title);
+      const intro = cleanText(item.intro) || title;
+      const topic = type === "finance" ? inferFinanceTopic(title) : inferCurrentTopic(title);
+      // ctime 是 Unix 时间戳（秒），需要转换
+      const publishedAt = item.ctime ? new Date(Number(item.ctime) * 1000).toISOString() : null;
+      return {
+        id: `news-${hash(`${source}:${title}:${item.url}`)}`,
+        source,
+        title,
+        publishedAt,
+        topic,
+        url: item.url || "",
+        summary: truncate(intro, 120),
+        tags: [topic],
+        cached: false
+      };
+    });
+}
+
 async function fetchTechSource(source) {
   const items = [];
   if (source.feedUrl) {
@@ -212,6 +365,31 @@ function parseRssFeed(xml, source) {
   }).filter(Boolean);
 }
 
+// 解析 RSS feed，不限制年份（用于时事热点）
+function parseRssFeedNoYearLimit(xml, source) {
+  const items = extractXmlBlocks(xml, "item");
+  return items.map((item, index) => {
+    const title = cleanText(readXmlTag(item, "title"));
+    const url = cleanText(readXmlTag(item, "link")) || extractXmlLink(item);
+    const publishedAt = normalizeTechDate(readXmlTag(item, "pubDate") || readXmlTag(item, "dc:date") || readXmlTag(item, "updated"));
+    if (!title || !url) return null;
+    const tags = extractXmlBlocks(item, "category").map((tag) => cleanText(tag)).filter(Boolean);
+    const description = cleanText(readXmlTag(item, "description") || readXmlTag(item, "content:encoded"));
+    const topic = inferCurrentTopic(`${title} ${description}`);
+    return {
+      id: `news-${hash(`${source}:${title}:${url}:${index}`)}`,
+      source,
+      title,
+      publishedAt,
+      topic,
+      url,
+      summary: truncate(description || title, 120),
+      tags: [topic],
+      cached: false
+    };
+  }).filter(Boolean);
+}
+
 function parseTechHtml(html, source) {
   if (isDataServicePage(html)) return [];
   const title = cleanText(metaContent(html, "og:title") || html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "");
@@ -241,6 +419,117 @@ function parseTechLinks(html, source) {
     items.push(techItem({ source, title, publishedAt, url, summary: title, tags: [] }));
   }
   return items;
+}
+
+function parseNewsHtml(html, source, type) {
+  const items = [];
+  // 通用链接提取：匹配新闻标题链接
+  const linkPattern = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match;
+  while ((match = linkPattern.exec(html))) {
+    const url = match[1];
+    const title = cleanText(match[2]);
+    // 过滤：标题太短或包含无关内容
+    if (!title || title.length < 8 || title.length > 100) continue;
+    if (/登录|注册|首页|关于我们|联系我们|更多/.test(title)) continue;
+    // 过滤非新闻链接
+    if (!/^https?:\/\//.test(url) && !/^\//.test(url)) continue;
+    // 过滤无关社会新闻
+    if (!isRelevantNews(title, type)) continue;
+    const fullUrl = absolutizeNewsUrl(url, source);
+    const publishedAt = normalizeTechDate(dateFromUrl(fullUrl) || html.match(/20\d{2}-\d{2}-\d{2}/)?.[0]);
+    const topic = type === "finance" ? inferFinanceTopic(title) : inferCurrentTopic(title);
+    // 尝试从链接附近提取摘要
+    const summary = extractSummaryAroundLink(html, match.index, title);
+    items.push({
+      id: `news-${hash(`${source}:${title}:${fullUrl}`)}`,
+      source,
+      title,
+      publishedAt,
+      topic,
+      url: fullUrl,
+      summary,
+      tags: [topic],
+      cached: false
+    });
+  }
+  return items.slice(0, 15);
+}
+
+// 从链接附近的 HTML 提取摘要
+function extractSummaryAroundLink(html, linkIndex, title) {
+  // 向前查找最近的 <p> 或 <span> 或 <div> 标签中的文本
+  const before = html.slice(Math.max(0, linkIndex - 500), linkIndex);
+  const after = html.slice(linkIndex, Math.min(html.length, linkIndex + 500));
+
+  // 尝试从链接后面的元素中提取文本
+  const afterText = after.match(/<\/a>\s*(?:<[^>]+>)*\s*([^<]{20,150})/);
+  if (afterText) {
+    const text = cleanText(afterText[1]);
+    if (text && text !== title && text.length > 15) return truncate(text, 120);
+  }
+
+  // 尝试从父元素的描述性文本中提取
+  const parentDesc = before.match(/<p[^>]*class=["'][^"']*(?:desc|summary|abstract|intro)[^"']*["'][^>]*>([\s\S]*?)<\/p>/i);
+  if (parentDesc) {
+    const text = cleanText(parentDesc[1]);
+    if (text && text.length > 15) return truncate(text, 120);
+  }
+
+  // 默认返回标题
+  return title;
+}
+
+// 判断是否为经管保研面试相关的新闻
+function isRelevantNews(title, type) {
+  // 排除明显无关的内容
+  if (/抽奖|中奖|彩票|开奖|生肖|星座|运势|情感|出轨|离婚|明星|综艺|娱乐|八卦|游戏|手游|小说|电影|电视剧|车祸|死亡|杀人|抢劫|盗窃|诈骗/.test(title)) {
+    return false;
+  }
+  // 时事热点：偏向政策、国际、教育、科技等
+  if (type === "current") {
+    // 排除纯金融/股票类新闻（这些归经济金融）
+    if (/股|基金|理财|投资|央行|货币|利率|汇率|LPR|降准|降息|金价|油价|期货|券商|银行.*利率|保险.*费率/.test(title)) {
+      return false;
+    }
+    return true;
+  }
+  // 经济金融：保留金融、经济、市场类
+  if (type === "finance") {
+    return true;
+  }
+  return true;
+}
+
+function absolutizeNewsUrl(url, source) {
+  if (/^https?:\/\//i.test(url)) return url;
+  const baseMap = {
+    "新华网": "http://www.xinhuanet.com",
+    "央视新闻": "https://news.cn",
+    "华尔街见闻": "https://wallstreetcn.com",
+    "第一财经": "https://www.yicai.com"
+  };
+  const base = baseMap[source] || "https://www.example.com";
+  return new URL(url, base).toString();
+}
+
+function inferCurrentTopic(text) {
+  if (/外交|国际|中美|中俄|中欧|联合国|峰会|外长/.test(text)) return "国际时事";
+  if (/政策|改革|法律|法规|政府|国务院|人大|政协/.test(text)) return "政策法规";
+  if (/经济|GDP|增长|发展|改革|产业/.test(text)) return "经济发展";
+  if (/社会|民生|教育|医疗|就业|住房/.test(text)) return "社会民生";
+  if (/科技|创新|研发|技术/.test(text)) return "科技动态";
+  return "时事热点";
+}
+
+function inferFinanceTopic(text) {
+  if (/股市|A股|美股|港股|上证|深证|创业板|科创板|纳斯达克/.test(text)) return "股票市场";
+  if (/基金|ETF|理财|投资|收益/.test(text)) return "基金理财";
+  if (/央行|货币政策|利率|汇率|LPR|降准|降息/.test(text)) return "货币政策";
+  if (/房地产|楼市|房价|地产|住房/.test(text)) return "房地产";
+  if (/贸易|关税|进出口|外贸|出口/.test(text)) return "国际贸易";
+  if (/AI|人工智能|芯片|半导体|新能源|电动车/.test(text)) return "产业经济";
+  return "财经热点";
 }
 
 function techItem({ source, title, publishedAt, url, summary, tags = [], index = 0 }) {

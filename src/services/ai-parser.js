@@ -25,7 +25,7 @@ async function postChatCompletion(config, body) {
         "authorization": `Bearer ${config.ai.apiKey}`
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30000)
+      signal: AbortSignal.timeout(300000)
     });
   } catch (error) {
     throw networkError(error, url);
@@ -146,7 +146,15 @@ function parseJsonContent(content) {
     return JSON.parse(cleaned);
   } catch {
     const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("AI response is not JSON");
-    return JSON.parse(match[0]);
+    if (!match) {
+      const preview = content.slice(0, 200).replace(/\s+/g, " ");
+      throw new Error(`AI response is not JSON. Received: ${preview}`);
+    }
+    try {
+      return JSON.parse(match[0]);
+    } catch (e) {
+      const preview = match[0].slice(0, 200).replace(/\s+/g, " ");
+      throw new Error(`AI returned invalid JSON: ${preview}`);
+    }
   }
 }

@@ -2,7 +2,7 @@ const NEWS_SOURCE_URL = "http://pc.baoyanwang.com.cn/articles?category=%E4%BF%9D
 
 const navItems = [
   ["news", "保研资讯", "News"],
-  ["tech", "科技热点", "Tech"],
+  ["tech", "热点资讯", "News"],
   ["package", "材料打包", "Package"],
   ["profile", "个人档案与进度", "Profile"]
 ];
@@ -48,6 +48,7 @@ let selectedApplicationId = null;
 let selectedNewsId = null;
 let newsFilter = "全部";
 let techFilter = "全部";
+let newsTab = "tech";
 let appConfig = null;
 
 const $ = (selector) => document.querySelector(selector);
@@ -193,20 +194,46 @@ function renderNewsDetail(item) {
 }
 
 function renderTech() {
-  const filters = ["全部", "量子位", "机器之心", "AI Agent", "模型部署", "具身智能", "大模型"];
-  const items = state.techHotspots.items.filter((item) => techFilter === "全部" || item.source === techFilter || item.topic === techFilter);
+  const tabs = [
+    { id: "tech", label: "科技资讯" },
+    { id: "current", label: "时事热点" },
+    { id: "finance", label: "经济金融" }
+  ];
+
+  let filters, items, cache, sourceLine, refreshApi;
+
+  if (newsTab === "tech") {
+    filters = ["全部", "量子位", "机器之心", "AI Agent", "模型部署", "具身智能", "大模型"];
+    items = state.techHotspots.items.filter((item) => techFilter === "全部" || item.source === techFilter || item.topic === techFilter);
+    cache = state.techHotspots;
+    sourceLine = "量子位 · 机器之心 · 网页端资讯";
+    refreshApi = "/api/tech/refresh";
+  } else if (newsTab === "current") {
+    filters = ["全部", "人民网", "国际时事", "政策法规", "经济发展", "社会民生", "科技动态"];
+    items = (state.currentHotspots?.items || []).filter((item) => techFilter === "全部" || item.source === techFilter || item.topic === techFilter);
+    cache = state.currentHotspots || {};
+    sourceLine = "人民网 · 时政频道";
+    refreshApi = "/api/current/refresh";
+  } else {
+    filters = ["全部", "新浪财经", "界面新闻", "股票市场", "基金理财", "货币政策", "房地产", "国际贸易", "产业经济"];
+    items = (state.financeHotspots?.items || []).filter((item) => techFilter === "全部" || item.source === techFilter || item.topic === techFilter);
+    cache = state.financeHotspots || {};
+    sourceLine = "新浪财经 · 界面新闻";
+    refreshApi = "/api/finance/refresh";
+  }
 
   $("#page-tech").innerHTML = `
     <div class="toolbar">
       <div>
-        <div class="source-line">量子位 · 机器之心 · 网页端资讯</div>
-        <div class="muted small">${state.techHotspots.stale ? "缓存" : "实时"} · ${formatDateTime(state.techHotspots.updatedAt)}</div>
+        <div class="source-line">${sourceLine}</div>
+        <div class="muted small">${cache.stale ? "缓存" : "实时"} · ${formatDateTime(cache.updatedAt)}</div>
       </div>
       <button class="secondary-button" id="refreshTechBtn">抓取更新</button>
     </div>
+    <div class="filter-row">${tabs.map((tab) => `<button class="chip ${newsTab === tab.id ? 'active' : ''}" data-news-tab="${tab.id}">${tab.label}</button>`).join("")}</div>
     <div class="filter-row">${filters.map((filter) => chip(filter, techFilter, "tech-filter")).join("")}</div>
     <div class="grid airy">
-      ${items.map((item) => `
+      ${items.length ? items.map((item) => `
         <article class="card">
           <div class="news-meta"><span>${escapeHtml(item.source)}</span><span>${formatDate(item.publishedAt)}</span></div>
           <h3>${escapeHtml(item.title)}</h3>
@@ -216,16 +243,28 @@ function renderTech() {
             <a class="ghost-button" href="${item.url}" target="_blank" rel="noreferrer">原文</a>
           </div>
         </article>
-      `).join("")}
+      `).join("") : '<div class="empty">暂无数据，点击"抓取更新"获取最新内容</div>'}
     </div>
   `;
 
+  // Tab 切换
+  $$("[data-news-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      newsTab = btn.dataset.newsTab;
+      techFilter = "全部";
+      renderTech();
+    });
+  });
+
+  // 刷新按钮
   $("#refreshTechBtn").addEventListener("click", async () => {
-    const result = await api("/api/tech/refresh", { method: "POST" });
+    const result = await api(refreshApi, { method: "POST" });
     await loadState();
     toast(result.message);
     renderTech();
   });
+
+  // 筛选按钮
   bindFilter("[data-tech-filter]", (value) => {
     techFilter = value;
     renderTech();
@@ -329,7 +368,7 @@ function renderPackage() {
             </div>
             <div class="mini-list compact-summary">
               ${mini("院校", university)}
-              ${mini("学院", valueOr(app.basicInfo.school, "需确认"))}
+              ${miniEditable("学院", valueOr(app.basicInfo.school, "需确认"), "school", app.id)}
               ${mini("类型", programLabel(app.basicInfo.program_type.value))}
               ${mini("缺漏", `${match.missing} 缺失 / ${match.needsFix} 待修正`)}
             </div>
@@ -360,6 +399,7 @@ function renderPackage() {
   $("#exportZipBtn").addEventListener("click", () => exportApplication("zip"));
   bindMaterialUploadActions(app);
   bindCitationClicks();
+  bindEditableFields();
 }
 
 function renderAiParseStatus(app) {
@@ -727,18 +767,35 @@ async function parseNotice() {
   if (!text) return toast("请粘贴通知");
   const model = appConfig?.ai?.model || $("#modelInput")?.value.trim() || "";
 
-  const result = await api("/api/notice/parse", {
-    method: "POST",
-    body: JSON.stringify({
-      text,
-      fileName: $("#noticeFile").files?.[0]?.name || "通知原文.txt",
-      ai: { provider: appConfig?.ai?.provider || "openai-compatible", model, apiKeyConfigured: Boolean(appConfig?.ai?.apiKeyConfigured) }
-    })
-  });
-  selectedApplicationId = result.application.id;
-  await loadState();
-  toast("解析完成");
-  renderPackage();
+  const parseBtn = $("#parseBtn");
+  const originalText = parseBtn.textContent;
+  parseBtn.disabled = true;
+  parseBtn.textContent = "⏳ 正在解析中，请稍候...";
+
+  try {
+    const result = await api("/api/notice/parse", {
+      method: "POST",
+      body: JSON.stringify({
+        text,
+        fileName: $("#noticeFile").files?.[0]?.name || "通知原文.txt",
+        ai: { provider: appConfig?.ai?.provider || "openai-compatible", model, apiKeyConfigured: Boolean(appConfig?.ai?.apiKeyConfigured) }
+      })
+    });
+    selectedApplicationId = result.application.id;
+    await loadState();
+
+    if (result.application.ai?.error) {
+      toast("⚠️ AI 解析失败，已用本地规则兜底完成");
+    } else {
+      toast("✅ AI 解析完成！");
+    }
+    renderPackage();
+  } catch (error) {
+    toast("❌ 解析失败：" + (error.message || "未知错误"));
+  } finally {
+    parseBtn.disabled = false;
+    parseBtn.textContent = originalText;
+  }
 }
 
 async function exportApplication(type) {
@@ -783,6 +840,33 @@ function bindCitationClicks() {
   });
 }
 
+function bindEditableFields() {
+  $$(".editable-mini strong[contenteditable]").forEach((el) => {
+    el.addEventListener("blur", async () => {
+      const appId = el.dataset.appId;
+      const field = el.dataset.field;
+      const newValue = el.textContent.trim();
+      if (!appId || !field) return;
+
+      try {
+        await api("/api/applications/" + appId + "/field", {
+          method: "POST",
+          body: JSON.stringify({ field, value: newValue })
+        });
+        toast("✅ 已保存");
+      } catch (error) {
+        toast("❌ 保存失败：" + error.message);
+      }
+    });
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        el.blur();
+      }
+    });
+  });
+}
+
 function highlightBlock(blockId) {
   $$(".source-block").forEach((block) => block.classList.toggle("active", block.id === `src-${blockId}`));
   $(`#src-${blockId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -809,6 +893,13 @@ function cite(blockId) {
 
 function mini(label, value) {
   return `<div class="mini"><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function miniEditable(label, value, field, appId) {
+  return `<div class="mini editable-mini" data-field="${field}">
+    <span>${label}</span>
+    <strong contenteditable="true" spellcheck="false" data-app-id="${appId}" data-field="${field}">${escapeHtml(value)}</strong>
+  </div>`;
 }
 
 function fieldMini(label, field) {

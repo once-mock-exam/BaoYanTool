@@ -217,7 +217,7 @@ export const cachedTechHotspots = [
   {
     id: "tech-qbit-001",
     source: "量子位",
-    title: "“DeepSeek版Claude Code”，Github 2.3k星",
+    title: "\"DeepSeek版Claude Code\"，Github 2.3k星",
     publishedAt: "2026-05-04T06:09:16.000Z",
     topic: "AI Agent",
     url: "https://www.qbitai.com/2026/05/412914.html",
@@ -245,6 +245,56 @@ export const cachedTechHotspots = [
     url: "https://www.qbitai.com/2026/05/412870.html",
     summary: "关注高吞吐并行高保真渲染和规模化训练，对具身智能、机器人仿真方向有参考价值。",
     tags: ["具身智能", "仿真", "开源框架"],
+    cached: true
+  }
+];
+
+export const cachedCurrentHotspots = [
+  {
+    id: "current-people-001",
+    source: "人民网",
+    title: "2026年全国两会重要议题前瞻",
+    publishedAt: "2026-05-04T00:00:00.000Z",
+    topic: "政策法规",
+    url: "http://politics.people.com.cn/",
+    summary: "关注民生保障、科技创新、绿色发展等重点领域政策走向。",
+    tags: ["政策法规", "两会", "民生"],
+    cached: true
+  },
+  {
+    id: "current-people-002",
+    source: "人民网",
+    title: "我国科技自立自强取得新突破",
+    publishedAt: "2026-05-03T00:00:00.000Z",
+    topic: "科技动态",
+    url: "http://politics.people.com.cn/",
+    summary: "多领域关键核心技术实现突破，自主创新成果不断涌现。",
+    tags: ["科技动态", "自主创新", "科技"],
+    cached: true
+  }
+];
+
+export const cachedFinanceHotspots = [
+  {
+    id: "finance-sina-001",
+    source: "新浪财经",
+    title: "央行最新货币政策信号解读",
+    publishedAt: "2026-05-04T00:00:00.000Z",
+    topic: "货币政策",
+    url: "https://finance.sina.com.cn/",
+    summary: "分析近期央行公开市场操作及政策走向。",
+    tags: ["货币政策", "央行", "利率"],
+    cached: true
+  },
+  {
+    id: "finance-jiemian-001",
+    source: "界面新闻",
+    title: "A股市场结构性机会分析",
+    publishedAt: "2026-05-03T00:00:00.000Z",
+    topic: "股票市场",
+    url: "https://www.jiemian.com/",
+    summary: "聚焦科技成长板块与价值蓝筹轮动趋势。",
+    tags: ["股票市场", "A股", "投资"],
     cached: true
   }
 ];

@@ -6,7 +6,7 @@ import { exportApplication } from "./services/exporter.js";
 import { matchMaterials } from "./services/matcher.js";
 import { mergeAiNoticeParse, parseNotice } from "./services/parser.js";
 import { parseNoticeWithAi } from "./services/ai-parser.js";
-import { fetchBaoyanNews, fetchTechHotspots } from "./services/crawler.js";
+import { fetchBaoyanNews, fetchTechHotspots, fetchCurrentHotspots, fetchFinanceHotspots } from "./services/crawler.js";
 import { loadAppConfig, publicConfig } from "./services/config.js";
 import { loadState, publicState, saveState } from "./services/storage.js";
 
@@ -223,6 +223,25 @@ async function handleApi(req, res) {
     return sendJson(res, 200, publicState(state, matchMaterials));
   }
 
+  if (req.method === "POST" && url.pathname.includes("/field")) {
+    console.log("DEBUG: /field route hit, pathname:", url.pathname);
+    const parts = url.pathname.split("/");
+    const appId = parts[3];
+    const body = await readJson(req);
+    const app = state.applications.find((item) => item.id === appId);
+    if (!app) return sendJson(res, 404, { error: "未找到申请项目" });
+
+    const { field, value } = body;
+    if (field === "school") {
+      app.basicInfo.school = value;
+    } else if (field === "program_type") {
+      app.basicInfo.program_type.value = value;
+    }
+
+    await saveState(state);
+    return sendJson(res, 200, { success: true });
+  }
+
   if (req.method === "POST" && url.pathname === "/api/export") {
     const body = await readJson(req);
     const application = state.applications.find((item) => item.id === body.applicationId) || state.applications[0];
@@ -260,6 +279,18 @@ async function handleApi(req, res) {
     state.techHotspots = await fetchTechHotspots({ currentCache: state.techHotspots });
     await saveState(state);
     return sendJson(res, 200, state.techHotspots);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/current/refresh") {
+    state.currentHotspots = await fetchCurrentHotspots({ currentCache: state.currentHotspots });
+    await saveState(state);
+    return sendJson(res, 200, state.currentHotspots);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/finance/refresh") {
+    state.financeHotspots = await fetchFinanceHotspots({ currentCache: state.financeHotspots });
+    await saveState(state);
+    return sendJson(res, 200, state.financeHotspots);
   }
 
   if (req.method === "POST" && url.pathname === "/api/import-news") {
